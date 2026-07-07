@@ -6,17 +6,14 @@ const TelegramBot = require('node-telegram-bot-api');
 
 const app = express();
 
-// Render automatically dictates the port via process.env.PORT
 const PORT = process.env.PORT || 3000;
 
-// Gagamit tayo ng Environment Variable para ligtas ang Token mo
 const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN; 
 if (!TELEGRAM_BOT_TOKEN) {
     console.error("CRITICAL ERROR: TELEGRAM_BOT_TOKEN is not defined!");
 }
 const bot = new TelegramBot(TELEGRAM_BOT_TOKEN, { polling: false });
 
-// Siguraduhing magagawa ang 'uploads' folder sa server automatic kung wala pa
 if (!fs.existsSync('./uploads')){
     fs.mkdirSync('./uploads');
 }
@@ -35,6 +32,7 @@ app.get('/', (req, res) => {
     res.sendFile(path.join(__dirname, 'public', 'index.html'));
 });
 
+// [Workflow 1]: Kalkulasyon para sa nakaraang linggo
 function getPreviousWeekNumber() {
     const current = new Date();
     const target = new Date(current.valueOf() - 7 * 24 * 60 * 60 * 1000);
@@ -48,10 +46,23 @@ function getPreviousWeekNumber() {
     return 1 + Math.ceil((firstThursday - target) / (7 * 24 * 60 * 60 * 1000));
 }
 
-// Single handling route strategy fed dynamically by frontend execution loop
+// [Workflow 2]: Kalkulasyon para sa kasalukuyang linggo (Walang bawas na 7 araw)
+function getCurrentWeekNumber() {
+    const target = new Date();
+    const dayNr = (target.getDay() + 6) % 7;
+    target.setDate(target.getDate() - dayNr + 3);
+    const firstThursday = target.valueOf();
+    target.setMonth(0, 1);
+    if (target.getDay() !== 4) {
+        target.setMonth(0, 1 + ((4 - target.getDay()) + 7) % 7);
+    }
+    return 1 + Math.ceil((firstThursday - target) / (7 * 24 * 60 * 60 * 1000));
+}
+
 app.post('/process-pdf', upload.single('pdfFile'), async (req, res) => {
     const targetChatId = req.body.telegramId;
     const QRValue = req.body.qrValue;
+    const processType = req.body.processType || 'last'; // Tumutugon sa kung anong button ang pinindot ('last' o 'current')
     const file = req.file;
 
     if (!file || !QRValue) {
@@ -59,7 +70,7 @@ app.post('/process-pdf', upload.single('pdfFile'), async (req, res) => {
     }
 
     try {
-        console.log(`[Received Text Metadata]: ${QRValue}`);
+        console.log(`[Mode: ${processType.toUpperCase()}] [Received Text Metadata]: ${QRValue}`);
         
         const parts = QRValue.split('&&&');
         let DocumentNumber = "";
@@ -72,44 +83,74 @@ app.post('/process-pdf', upload.single('pdfFile'), async (req, res) => {
         }
 
         let documentFrom = "";
-        if (QRValue.includes("08068")) {
+        if (QRValue.includes("08068")) 
+        {
             documentFrom = "Frederick Malapo";
-        } else if (QRValue.includes("14359")) {
+        } 
+        else if (QRValue.includes("14359")) 
+        {
             documentFrom = "John Carlo Balute";
+        } 
+        else if (QRValue.includes("04788"))
+        {
+            documentFrom = "Gil Cao"
         }
 
-        const weekNumber = getPreviousWeekNumber();
         let documentNameToRename = "";
 
-        if (DocumentNumber === "12942303") {
-            documentNameToRename = `Week ${weekNumber}, 303-${sixDigit} (${documentFrom})`;
-        } else if (DocumentNumber === "12942305") {
-            documentNameToRename = `Week ${weekNumber}, 305 (${documentFrom})`;
-        } else if (DocumentNumber === "12942309") {
-            let weekType = "";
-            if (QRValue.includes("midweek")) {
-                weekType = "Midweek";
-            } else if (QRValue.includes("weekend")) {
-                weekType = "Weekend";
+        if (processType === 'current') {
+            // === BAGONG CODES AT LOGIC PARA SA CURRENT WEEK ===
+            const currentWeekNumber = getCurrentWeekNumber();
+            
+            if (DocumentNumber === "12942303") {
+                documentNameToRename = `Week ${currentWeekNumber}, 303 (${documentFrom})`; 
+            } else if (DocumentNumber === "12942305") {
+                documentNameToRename = `Week ${currentWeekNumber}, 305 (${documentFrom})`;
+            } else if (DocumentNumber === "12942309") {
+                documentNameToRename = `Week ${currentWeekNumber}, 309 (${documentFrom})`; 
+            } else {
+                throw new Error(`None of these are supported, stay tuned for updates of the function. (Found: ${DocumentNumber})`);
             }
-            documentNameToRename = `Week ${weekNumber}, 309 ${weekType} (${documentFrom})`;
         } else {
-            throw new Error(`None of these are supported, stay tuned for updates of the function. (Found: ${DocumentNumber})`);
+            // === ORIHINAL NA LOGIC PARA SA LAST WEEK ===
+            const weekNumber = getPreviousWeekNumber();
+            
+            if (DocumentNumber === "12942303") 
+            {
+                documentNameToRename = `Week ${weekNumber}, 303-${sixDigit} (${documentFrom})`;
+            } 
+            else if (DocumentNumber === "12942305") 
+            {
+                documentNameToRename = `Week ${weekNumber}, 305 (${documentFrom})`;
+            } 
+            else if (DocumentNumber === "12942309") 
+            {
+                let weekType = "";
+                if (QRValue.includes("midweek")) 
+                {
+                    weekType = "Midweek";
+                } 
+                else if (QRValue.includes("weekend")) 
+                {
+                    weekType = "Weekend";
+                }
+                documentNameToRename = `Week ${weekNumber}, 309 ${weekType} (${documentFrom})`;
+            } else {
+                throw new Error(`None of these are supported, stay tuned for updates of the function. (Found: ${DocumentNumber})`);
+            }
         }
 
-        // Clean file name constraints 
+        // Paglilinis at pag-setup ng file paths sa local server storage context
         const cleanFileName = documentNameToRename.replace(/[/\\?%*:|"<>]/g, '-') + ".pdf";
         const newFilePath = path.join(path.dirname(file.path), cleanFileName);
 
-        // Rename file on native disk file structure
         fs.renameSync(file.path, newFilePath);
 
-        // Send to targeted Telegram context ID
+        // Pagpapadala sa target account Telegram UI interface
         await bot.sendDocument(targetChatId, newFilePath, {
             caption: `Successfully automated file: ${cleanFileName}`
         });
 
-        // Clean cache storage track
         if (fs.existsSync(newFilePath)) {
             fs.unlinkSync(newFilePath);
         }
@@ -118,7 +159,7 @@ app.post('/process-pdf', upload.single('pdfFile'), async (req, res) => {
 
     } catch (error) {
         console.error(`Error encountered inside execution thread:`, error.message);
-        if (fs.existsSync(file.path)) {
+        if (file && fs.existsSync(file.path)) {
             fs.unlinkSync(file.path);
         }
         res.status(500).json({ error: error.message });
