@@ -53,10 +53,22 @@
 
         pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.4.120/pdf.worker.min.js';
 
-        // Globals para ma-track kung aling button ang ginamit sa submission
         let activeProcessType = 'last';
         document.getElementById('lastWeekBtn').addEventListener('click', () => activeProcessType = 'last');
         document.getElementById('currentWeekBtn').addEventListener('click', () => activeProcessType = 'current');
+
+        // Helper function: Flattens grey tones into high-contrast pure black/white
+        function binarizeImageData(imageData, threshold = 120) {
+            const data = imageData.data;
+            for (let i = 0; i < data.length; i += 4) {
+                const grayscale = (data[i] * 0.299) + (data[i + 1] * 0.587) + (data[i + 2] * 0.114);
+                const value = grayscale < threshold ? 0 : 255;
+                data[i] = value;     // Red
+                data[i + 1] = value; // Green
+                data[i + 2] = value; // Blue
+            }
+            return imageData;
+        }
 
         function extractQRFromPDF(file) {
             return new Promise((resolve, reject) => {
@@ -65,25 +77,51 @@
                     try {
                         const typedarray = new Uint8Array(e.target.result);
                         const pdf = await pdfjsLib.getDocument(typedarray).promise;
-                        // Paalala: Palaging kumukuha sa page 1 kahit gaano pa karami ang pahina
                         const page = await pdf.getPage(1);
                         
-                        const viewport = page.getViewport({ scale: 2.0 });
-                        const canvas = document.createElement('canvas');
-                        const context = canvas.getContext('2d');
-                        canvas.width = viewport.width;
-                        canvas.height = viewport.height;
+                        // Higher scale (3.0) for increased DPI on low quality scans
+                        const scale = 3.0;
+                        const viewport = page.getViewport({ scale: scale });
                         
-                        await page.render({ canvasContext: context, viewport: viewport }).promise;
+                        const fullCanvas = document.createElement('canvas');
+                        const fullCtx = fullCanvas.getContext('2d');
+                        fullCanvas.width = viewport.width;
+                        fullCanvas.height = viewport.height;
                         
-                        const imageData = context.getImageData(0, 0, canvas.width, canvas.height);
-                        const code = jsQR(imageData.data, imageData.width, imageData.height);
+                        await page.render({ canvasContext: fullCtx, viewport: viewport }).promise;
                         
-                        if (code) {
-                            resolve(code.data);
-                        } else {
-                            reject(new Error(`No QR code detected inside page 1 of this file.`));
-                        }
+                        // PASS 1: Raw Full Page Scan
+                        let fullImgData = fullCtx.getImageData(0, 0, fullCanvas.width, fullCanvas.height);
+                        let code = jsQR(fullImgData.data, fullImgData.width, fullImgData.height);
+                        if (code) return resolve(code.data);
+
+                        // PASS 2: Crop Upper-Right Quadrant (where the QR is located)
+                        const cropCanvas = document.createElement('canvas');
+                        const cropCtx = cropCanvas.getContext('2d');
+                        const cropX = Math.floor(fullCanvas.width * 0.35); // Start at 35% width
+                        const cropY = 0;
+                        const cropW = fullCanvas.width - cropX;
+                        const cropH = Math.floor(fullCanvas.height * 0.55); // Top 55% height
+
+                        cropCanvas.width = cropW;
+                        cropCanvas.height = cropH;
+                        cropCtx.drawImage(fullCanvas, cropX, cropY, cropW, cropH, 0, 0, cropW, cropH);
+
+                        let cropImgData = cropCtx.getImageData(0, 0, cropW, cropH);
+                        code = jsQR(cropImgData.data, cropImgData.width, cropImgData.height);
+                        if (code) return resolve(code.data);
+
+                        // PASS 3: Binarized / High-Contrast Upper-Right Crop (Flat State Filter)
+                        let binarizedCropData = binarizeImageData(cropCtx.getImageData(0, 0, cropW, cropH), 130);
+                        code = jsQR(binarizedCropData.data, binarizedCropData.width, binarizedCropData.height);
+                        if (code) return resolve(code.data);
+
+                        // PASS 4: Aggressive Threshold Binarized Crop (for very dark/faint scans)
+                        let aggressiveCropData = binarizeImageData(cropCtx.getImageData(0, 0, cropW, cropH), 95);
+                        code = jsQR(aggressiveCropData.data, aggressiveCropData.width, aggressiveCropData.height);
+                        if (code) return resolve(code.data);
+
+                        reject(new Error(`Could not decode QR code even after flattening and image enhancement.`));
                     } catch (err) {
                         reject(err);
                     }
@@ -99,7 +137,6 @@
             const currentWeekBtn = document.getElementById('currentWeekBtn');
             const statusDiv = document.getElementById('status');
             
-            // I-lock ang dalawang button habang nagproproseso
             lastWeekBtn.disabled = true;
             currentWeekBtn.disabled = true;
             
@@ -113,7 +150,7 @@
 
             for (let i = 0; i < files.length; i++) {
                 const file = files[i];
-                statusDiv.innerText = `Processing [${i + 1}/${files.length}]: Reading QR code from "${file.name}"...`;
+                statusDiv.innerText = `Processing [${i + 1}/${files.length}]: Enhancing & Reading QR code from "${file.name}"...`;
 
                 try {
                     const qrValue = await extractQRFromPDF(file);
@@ -122,7 +159,7 @@
                     formData.append('pdfFile', file);
                     formData.append('telegramId', telegramId);
                     formData.append('qrValue', qrValue);
-                    formData.append('processType', activeProcessType); // Dito ipinapasa ang string mode ('last' o 'current')
+                    formData.append('processType', activeProcessType);
 
                     statusDiv.innerText = `Processing [${i + 1}/${files.length}]: Syncing metadata with automation backend...`;
 
