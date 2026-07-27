@@ -18,10 +18,23 @@
         #lastWeekBtn:hover { background-color: #006699; }
         #currentWeekBtn { background-color: #28a745; }
         #currentWeekBtn:hover { background-color: #218838; }
+        #viewEvangelistsBtn { background-color: #6c757d; }
+        #viewEvangelistsBtn:hover { background-color: #5a6268; }
         button:disabled { background-color: #cccccc !important; cursor: not-allowed; }
         #status { margin-top: 20px; padding: 15px; border-radius: 4px; display: none; }
         .success { background-color: #d4edda; color: #155724; }
         .error { background-color: #f8d7da; color: #721c24; }
+        
+        /* Evangelist Modal/Panel Styles */
+        #evangelistPanel { display: none; margin-top: 30px; padding-top: 20px; border-top: 2px dashed #ccc; }
+        .ev-item { display: flex; justify-content: space-between; align-items: center; background: #f8f9fa; padding: 10px; margin-bottom: 8px; border-radius: 4px; border: 1px solid #ddd; }
+        .ev-item span { font-size: 14px; }
+        .ev-actions button { padding: 6px 10px; font-size: 12px; width: auto; margin-left: 5px; }
+        .btn-edit { background-color: #ffc107; color: #000; }
+        .btn-delete { background-color: #dc3545; }
+        .add-box { display: flex; gap: 8px; margin-top: 15px; }
+        .add-box input { flex: 1; padding: 8px; }
+        .btn-add { background-color: #17a2b8; width: auto; padding: 8px 15px; }
     </style>
 </head>
 <body>
@@ -41,10 +54,24 @@
             <div class="btn-container">
                 <button type="submit" id="lastWeekBtn">⏮️ Document Renamer of Last Week</button>
                 <button type="submit" id="currentWeekBtn">🆕 New Document Renamer of Current Week</button>
+                <button type="button" id="viewEvangelistsBtn">👥 View Saved Evangelist</button>
             </div>
         </form>
 
         <div id="status"></div>
+
+        <!-- Evangelist Management Panel -->
+        <div id="evangelistPanel">
+            <h3>Saved Evangelists Management</h3>
+            <div id="evListContainer"></div>
+            
+            <h4>Add New Evangelist</h4>
+            <div class="add-box">
+                <input type="text" id="newEvNum" placeholder="Assigned No.">
+                <input type="text" id="newEvName" placeholder="Full Name">
+                <button type="button" class="btn-add" id="addEvBtn">Add</button>
+            </div>
+        </div>
     </div>
 
     <script>
@@ -56,6 +83,107 @@
         let activeProcessType = 'last';
         document.getElementById('lastWeekBtn').addEventListener('click', () => activeProcessType = 'last');
         document.getElementById('currentWeekBtn').addEventListener('click', () => activeProcessType = 'current');
+
+        // Toggle Evangelist Panel View
+        const evangelistPanel = document.getElementById('evangelistPanel');
+        document.getElementById('viewEvangelistsBtn').addEventListener('click', () => {
+            if (evangelistPanel.style.display === 'block') {
+                evangelistPanel.style.display = 'none';
+            } else {
+                evangelistPanel.style.display = 'block';
+                loadEvangelistsUI();
+            }
+        });
+
+        // Load Evangelists via API
+        async function loadEvangelistsUI() {
+            const container = document.getElementById('evListContainer');
+            container.innerHTML = 'Loading...';
+            try {
+                const res = await fetch('/api/evangelists');
+                const list = await res.json();
+                
+                if (list.length === 0) {
+                    container.innerHTML = '<p>No saved evangelists found.</p>';
+                    return;
+                }
+
+                container.innerHTML = '';
+                list.forEach(ev => {
+                    const div = document.createElement('div');
+                    div.className = 'ev-item';
+                    div.innerHTML = `
+                        <span><strong>${ev.number}</strong>: ${ev.name}</span>
+                        <div class="ev-actions">
+                            <button class="btn-edit" onclick="renameEvangelist('${ev.number}', '${ev.name}')">Rename</button>
+                            <button class="btn-delete" onclick="deleteEvangelist('${ev.number}')">Delete</button>
+                        </div>
+                    `;
+                    container.appendChild(div);
+                });
+            } catch (err) {
+                container.innerHTML = '<p style="color:red;">Failed to load evangelists.</p>';
+            }
+        }
+
+        // Add Evangelist
+        document.getElementById('addEvBtn').addEventListener('click', async () => {
+            const number = document.getElementById('newEvNum').value.trim();
+            const name = document.getElementById('newEvName').value.trim();
+            if (!number || !name) {
+                alert('Please provide both Assigned Number and Name.');
+                return;
+            }
+
+            const res = await fetch('/api/evangelists', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ number, name })
+            });
+            const data = await res.json();
+            if (res.ok) {
+                document.getElementById('newEvNum').value = '';
+                document.getElementById('newEvName').value = '';
+                loadEvangelistsUI();
+            } else {
+                alert(data.error);
+            }
+        });
+
+        // Rename Evangelist
+        window.renameEvangelist = async function(oldNumber, currentName) {
+            const newName = prompt(`Enter new name for evangelist (${oldNumber}):`, currentName);
+            if (newName === null) return;
+            
+            const newNum = prompt(`Modify Assigned Number if needed (leave unchanged to keep ${oldNumber}):`, oldNumber);
+            if (newNum === null) return;
+
+            const res = await fetch(`/api/evangelists/${oldNumber}`, {
+                method: 'PUT',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ name: newName, newNumber: newNum })
+            });
+            const data = await res.json();
+            if (res.ok) {
+                loadEvangelistsUI();
+            } else {
+                alert(data.error);
+            }
+        };
+
+        // Delete Evangelist
+        window.deleteEvangelist = async function(number) {
+            if (!confirm(`Are you sure you want to delete evangelist with number ${number}?`)) return;
+
+            const res = await fetch(`/api/evangelists/${number}`, {
+                method: 'DELETE'
+            });
+            if (res.ok) {
+                loadEvangelistsUI();
+            } else {
+                alert('Failed to delete evangelist.');
+            }
+        };
 
         // Helper function: Flattens grey tones into high-contrast pure black/white
         function binarizeImageData(imageData, threshold = 120) {
